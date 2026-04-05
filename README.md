@@ -24,7 +24,15 @@ Random video chat with strangers. Built with Next.js + WebRTC + Pusher.
 3. Choose cluster closest to you (e.g. `us2`, `eu`)
 4. Copy your **App ID**, **Key**, **Secret**, and **Cluster**
 
-### Step 2: Deploy to Vercel
+### Step 2: Set up MongoDB (for persistent matching)
+
+1. Go to [MongoDB Atlas](https://www.mongodb.com/atlas) → Sign up free
+2. Create a new cluster (free tier)
+3. Create a database user and whitelist your IP (or 0.0.0.0/0 for all)
+4. Get your connection string from "Connect" → "Connect your application"
+5. It should look like: `mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority`
+
+### Step 3: Deploy to Vercel
 
 ```bash
 # Clone / download this folder, then:
@@ -33,7 +41,7 @@ npm install
 
 Or push to GitHub and import in Vercel dashboard.
 
-### Step 3: Set environment variables in Vercel
+### Step 4: Set environment variables in Vercel
 
 In your Vercel project → Settings → Environment Variables, add:
 
@@ -45,9 +53,11 @@ PUSHER_CLUSTER        = us2
 
 NEXT_PUBLIC_PUSHER_KEY     = your_key
 NEXT_PUBLIC_PUSHER_CLUSTER = us2
+
+MONGODB_URI           = mongodb+srv://username:password@cluster.mongodb.net/randomtalk?retryWrites=true&w=majority
 ```
 
-### Step 4: Deploy
+### Step 5: Deploy
 
 ```bash
 npx vercel --prod

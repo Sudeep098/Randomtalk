@@ -1,8 +1,11 @@
 import pusher from "../../lib/pusher";
+import { MongoClient } from "mongodb";
 
-// Shared waiting pool (persists across hot reloads in dev, resets on cold start)
-const waitingPool = new Map(); // userId -> { userId, interests, timestamp }
-const activePairs = new Map(); // userId -> partnerId
+// MongoDB connection
+const client = new MongoClient(process.env.MONGODB_URI);
+const db = client.db("randomtalk");
+const waitingCollection = db.collection("waiting");
+const activeCollection = db.collection("active");
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
@@ -11,76 +14,72 @@ export default async function handler(req, res) {
 
   if (!userId) return res.status(400).json({ error: "userId required" });
 
-  // LEAVE: remove from pool + notify partner
-  if (action === "leave") {
-    waitingPool.delete(userId);
-    const partnerId = activePairs.get(userId);
-    if (partnerId) {
-      activePairs.delete(userId);
-      activePairs.delete(partnerId);
-      // Notify partner that this user left
-      await pusher.trigger(`user-${partnerId}`, "partner-left", { userId });
-    }
-    return res.status(200).json({ ok: true });
-  }
+  try {
+    await client.connect();
 
-  // FIND: match with someone
-  waitingPool.delete(userId); // remove stale entry
-
-  // Try interest-based match first
-  let matchedEntry = null;
-  let matchedKey = null;
-
-  if (interests.length > 0) {
-    for (const [uid, entry] of waitingPool) {
-      if (uid === userId) continue;
-      const commonInterests = entry.interests.filter((i) =>
-        interests.includes(i)
-      );
-      if (commonInterests.length > 0) {
-        matchedEntry = entry;
-        matchedKey = uid;
-        break;
+    // LEAVE: remove from pool + notify partner
+    if (action === "leave") {
+      await waitingCollection.deleteOne({ userId });
+      const activeDoc = await activeCollection.findOne({ $or: [{ userId }, { partnerId: userId }] });
+      if (activeDoc) {
+        await activeCollection.deleteOne({ _id: activeDoc._id });
+        const partnerId = activeDoc.userId === userId ? activeDoc.partnerId : activeDoc.userId;
+        // Notify partner that this user left
+        await pusher.trigger(`user-${partnerId}`, "partner-left", { userId });
       }
+      return res.status(200).json({ ok: true });
     }
-  }
 
-  // Fall back to random match
-  if (!matchedEntry) {
-    for (const [uid, entry] of waitingPool) {
-      if (uid === userId) continue;
-      matchedEntry = entry;
-      matchedKey = uid;
-      break;
+    // FIND: match with someone
+    await waitingCollection.deleteOne({ userId }); // remove stale entry
+
+    // Try interest-based match first
+    let matchedDoc = null;
+
+    if (interests.length > 0) {
+      matchedDoc = await waitingCollection.findOne({
+        userId: { $ne: userId },
+        interests: { $in: interests }
+      });
     }
-  }
 
-  if (matchedEntry && matchedKey) {
-    // Found a match!
-    waitingPool.delete(matchedKey);
-    activePairs.set(userId, matchedKey);
-    activePairs.set(matchedKey, userId);
+    // Fall back to random match
+    if (!matchedDoc) {
+      matchedDoc = await waitingCollection.findOne({ userId: { $ne: userId } });
+    }
 
-    // Decide who initiates (the one who was waiting longer = matchedKey is initiator)
-    // The person who was waiting becomes the "offer" sender
-    await pusher.trigger(`user-${matchedKey}`, "matched", {
-      partnerId: userId,
-      initiator: true, // matched person sends offer
-    });
+    if (matchedDoc) {
+      // Found a match!
+      await waitingCollection.deleteOne({ _id: matchedDoc._id });
+      await activeCollection.insertOne({ userId, partnerId: matchedDoc.userId });
+      await activeCollection.insertOne({ userId: matchedDoc.userId, partnerId: userId });
 
-    return res.status(200).json({
-      matched: true,
-      partnerId: matchedKey,
-      initiator: false, // new arrival receives offer
-    });
-  } else {
-    // No match, join waiting pool
-    waitingPool.set(userId, {
-      userId,
-      interests,
-      timestamp: Date.now(),
-    });
+      // Decide who initiates (the one who was waiting longer = matchedDoc is initiator)
+      // The person who was waiting becomes the "offer" sender
+      await pusher.trigger(`user-${matchedDoc.userId}`, "matched", {
+        partnerId: userId,
+        initiator: true, // matched person sends offer
+      });
 
-    return res.status(200).json({ matched: false, waiting: true });
+      return res.status(200).json({
+        matched: true,
+        partnerId: matchedDoc.userId,
+        initiator: false, // new arrival receives offer
+      });
+    } else {
+      // No match, join waiting pool
+      await waitingCollection.insertOne({
+        userId,
+        interests,
+        timestamp: new Date(),
+      });
+
+      return res.status(200).json({ matched: false, waiting: true });
+    }
+  } catch (error) {
+    console.error("Database error:", error);
+    return res.status(500).json({ error: "Database error" });
+  } finally {
+    await client.close();
   }
 }
