@@ -2,7 +2,8 @@ import pusher from "../../lib/pusher";
 import { MongoClient } from "mongodb";
 
 // MongoDB connection
-const client = new MongoClient(process.env.MONGODB_URI);
+const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/randomtalk";
+const client = new MongoClient(mongoUri);
 const db = client.db("randomtalk");
 const waitingCollection = db.collection("waiting");
 const activeCollection = db.collection("active");
